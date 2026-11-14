@@ -1,0 +1,75 @@
+name: apply
+
+# Apply every live environment changed on main.
+# Each job runs in the GitHub environment <team>-<env>: protect it with required reviewers.
+# The apply role trusts only jobs of that environment, so nothing else can assume it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "live/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TERRAFORM_VERSION: 1.17.1
+  TERRAGRUNT_VERSION: 1.2.1
+
+jobs:
+  detect:
+    if: vars.ENABLE_AWS_CI == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.changed.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: changed
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: echo "environments=$(./scripts/changed-envs.sh "$BEFORE_SHA")" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: detect
+    if: needs.detect.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(needs.detect.outputs.environments) }}
+    name: apply ${{ matrix.env.name }}
+    environment: ${{ matrix.env.name }}
+    concurrency:
+      group: apply-${{ matrix.env.name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: ./scripts/install-terragrunt.sh "$TERRAGRUNT_VERSION"
+
+      - id: info
+        env:
+          ENV_DIR: ${{ matrix.env.dir }}
+        run: ./scripts/env-info.sh "$ENV_DIR" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.info.outputs.apply_role }}
+          aws-region: ${{ steps.info.outputs.region }}
+
+      # run --all semantics: Terragrunt adds -auto-approve to each unit; the environment gate is the approval.
+      - name: Apply
+        working-directory: ${{ matrix.env.dir }}
+        run: |
+          terragrunt stack generate
+          terragrunt stack run apply --non-interactive

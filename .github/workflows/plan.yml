@@ -1,0 +1,73 @@
+name: plan
+
+# Plan every live environment changed in a pull request, with a read-only role and no stored keys.
+# Runs only against real AWS accounts: set the repository variable ENABLE_AWS_CI to "true".
+on:
+  pull_request:
+    paths:
+      - "live/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: 1.17.1
+  TERRAGRUNT_VERSION: 1.2.1
+
+jobs:
+  detect:
+    if: vars.ENABLE_AWS_CI == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.changed.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: echo "environments=$(./scripts/changed-envs.sh "$BASE_SHA")" >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: detect
+    if: needs.detect.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(needs.detect.outputs.environments) }}
+    name: plan ${{ matrix.env.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: ./scripts/install-terragrunt.sh "$TERRAGRUNT_VERSION"
+
+      - id: info
+        env:
+          ENV_DIR: ${{ matrix.env.dir }}
+        run: ./scripts/env-info.sh "$ENV_DIR" >> "$GITHUB_OUTPUT"
+
+      # Short-lived credentials for <team>-<env>-ci-plan: trusted only for pull requests of this repository.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.info.outputs.plan_role }}
+          aws-region: ${{ steps.info.outputs.region }}
+
+      - name: Plan
+        working-directory: ${{ matrix.env.dir }}
+        run: |
+          terragrunt stack generate
+          terragrunt stack run plan --non-interactive

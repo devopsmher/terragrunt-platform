@@ -1,0 +1,11 @@
+# Terraform and Terragrunt working files
+.terraform/
+.terragrunt-cache/
+.terragrunt-stack/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# Lock files belong to live repositories, not to reusable modules
+modules/**/.terraform.lock.hcl

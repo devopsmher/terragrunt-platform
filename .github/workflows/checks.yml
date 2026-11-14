@@ -1,0 +1,46 @@
+name: checks
+
+# Static checks for the catalog: no cloud access needed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.17.1
+  TERRAGRUNT_VERSION: 1.2.1
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: ./scripts/install-terragrunt.sh "$TERRAGRUNT_VERSION"
+
+      - name: Format
+        run: |
+          terraform fmt -check -recursive modules
+          terragrunt hcl fmt --check
+
+      - name: Pinned sources
+        run: ./scripts/check-pinned-refs.sh
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Validate modules
+        run: |
+          for module in modules/*/; do
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" validate
+          done
